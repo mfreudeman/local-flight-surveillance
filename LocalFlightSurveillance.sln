@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Data", "Data\Data.csproj", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RTLSDRADSB", "RTLSDRADSB\RTLSDRADSB.csproj", "{A58D663F-E356-433B-B96B-D43136C17625}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DataTests", "DataTests\DataTests.csproj", "{3177E481-F0D8-42CF-8DB3-19E8616162D0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +29,10 @@ Global
 		{A58D663F-E356-433B-B96B-D43136C17625}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A58D663F-E356-433B-B96B-D43136C17625}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A58D663F-E356-433B-B96B-D43136C17625}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3177E481-F0D8-42CF-8DB3-19E8616162D0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3177E481-F0D8-42CF-8DB3-19E8616162D0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3177E481-F0D8-42CF-8DB3-19E8616162D0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3177E481-F0D8-42CF-8DB3-19E8616162D0}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
