@@ -1,79 +1,85 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Net.Http;
-using System.Text;
 using System.Threading.Tasks;
+using LFS.Data.API.AeroAPI.Model;
+using System.Text.Json;
 
 namespace LFS.Data.API.AeroAPI
 {
+    public enum IdentType
+    {
+        Designator,
+        Registration,
+        FaFlightId
+    }
     public class AeroAPI
     {
-        public const string API_AUTH_HEADER = "x-apikey";
-        public const string API_URL = "https://aeroapi.flightaware.com";
-        public const string API_BASE_PATH = "aeroapi";
+        public static ITestDataProvidor TestDataProvidor { get; set; }
 
-        public AeroAPI(HttpClient client, string apiKey)
+        public static async Task<ResultList<Flight>> FlightsByFlightIdentifier(string apiKey, string ident, IdentType identType = IdentType.Designator)
         {
-            _apiKey = apiKey;
-            _httpClient = client;
+            Uri uri = new Uri(string.Format(
+                "{0}/{1}/flights/{2}?ident_type={3}",
+                API_URL,
+                API_BASE_PATH,
+                ident,
+                IdentTypeString(identType)));
+
+            return await GetAPIResponse<FlightsResultList>(uri, apiKey);
         }
 
-        public Newtonsoft.Json.Linq.JObject AirportsFlightsScheduledArrivalsRequest(
-            string airportCode, 
-            string airlineCode = null, 
-            Model.EAirportFlightsScheduledArrivalsRequestType type = Model.EAirportFlightsScheduledArrivalsRequestType.NONE, 
-            int maxPages = 0, 
-            string cursor = null
-        )
-        {
-            if (AirportsFlightsScheduledArrivalsMeter != null)
-            {
-                if (AirportsFlightsScheduledArrivalsMeter.CanCall())
-                {
-                    AirportsFlightsScheduledArrivalsMeter.Called();
-                }
-                else
-                {
-                    return null;
-                }
-            }
+        private static string API_AUTH_HEADER = "x-apikey";
+        private static string API_URL = "https://aeroapi.flightaware.com";
+        private static string API_BASE_PATH = "aeroapi";
+        private static HttpClient _httpClient = null;
 
-            Model.AirportFlightsScheduledArrivalsRequest request = new Model.AirportFlightsScheduledArrivalsRequest(airportCode, cursor);
-            request.AirlineCode = airlineCode;
-            request.FlightType = type;
-            request.MaxPages = maxPages;
-            return getResponse(request);
+        private static string IdentTypeString(IdentType identType)
+        {
+            switch (identType)
+            {
+                case IdentType.Designator: return "designator";
+                case IdentType.Registration: return "registration";
+                case IdentType.FaFlightId: return "fa_flight_id";
+                default: return "";
+            }
         }
-
-        public APIMeter AirportsFlightsScheduledArrivalsMeter { get; set; }
-
-        private string _apiKey;
-        private HttpClient _httpClient;
-
-        private Newtonsoft.Json.Linq.JObject getResponse(Model.IRequest requestData)
+        private static Task<HttpResponseMessage> MakeRequest(Uri uri, string apiKey)
         {
-            var responseTask = Task.Run<Newtonsoft.Json.Linq.JObject>(async () => { return await request(_httpClient, requestData); });
-            responseTask.Wait();
-            return responseTask.Result;
+            if (_httpClient == null)
+            {
+                _httpClient = new HttpClient();
+            }
+
+            _httpClient.DefaultRequestHeaders.Accept.Clear();
+            _httpClient.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+            _httpClient.DefaultRequestHeaders.Add(API_AUTH_HEADER, apiKey);
+
+            return _httpClient.GetAsync(uri);
         }
-
-        private async Task<Newtonsoft.Json.Linq.JObject> request(HttpClient client, Model.IRequest request)
+        private static async Task<_T> GetAPIResponse<_T>(Uri requestUri, string apiKey)
         {
-            if (!client.DefaultRequestHeaders.Contains(API_AUTH_HEADER))
+            System.IO.Stream responseStream;
+            bool responseSuccess;
+
+            if (TestDataProvidor == null)
             {
-                client.DefaultRequestHeaders.Add(API_AUTH_HEADER, _apiKey);
+                var response = await MakeRequest(requestUri, apiKey);
+                responseStream = await response.Content.ReadAsStreamAsync();
+                responseSuccess = response.IsSuccessStatusCode;
+            }
+            else // Don't use the web API if a testing data providor has been set.
+            {
+                responseStream = TestDataProvidor.Response();
+                responseSuccess = true;
+                System.Threading.Thread.Sleep(100); // Bake in some extra time like if we were waiting for an http response.
             }
 
-            HttpResponseMessage response = await client.GetAsync(request.Uri);
+            if (responseSuccess)
+            {
+                return await JsonSerializer.DeserializeAsync<_T>(responseStream);
+            }
 
-            if (response.StatusCode == System.Net.HttpStatusCode.OK)
-            {
-                return Newtonsoft.Json.Linq.JObject.Parse(await response.Content.ReadAsStringAsync());
-            }
-            else
-            {
-                return null;
-            }
+            return default;
         }
     }
 }
