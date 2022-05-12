@@ -2,10 +2,13 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 using System.Windows;
+using System.IO;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Documents;
@@ -15,6 +18,8 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using NLua;
+using LFS.Data.API.AeroAPI.Model;
+using System.Diagnostics;
 
 /* TODO
  * X Add GMap to MainWindow
@@ -56,11 +61,16 @@ namespace FinalTracker
 
         static Lua luaState;
 
+        string aeroAPIKey;
+        IDictionary<string, Tuple<LFS.Data.API.AeroAPI.Model.Flight, DateTime>> callsignCache = new ConcurrentDictionary<string, Tuple<LFS.Data.API.AeroAPI.Model.Flight, DateTime>>();
+
         public MainWindow()
         {
             InitializeComponent();
 
             luaState = new Lua();
+
+            aeroAPIKey = File.ReadAllText("aeroapi.key");
 
             acftRcvr = new RTLSDRADSB.AircraftReceiver(1);
             acftRcvr.OnAircraftListUpdated += OnAircraftListUpdated;
@@ -95,6 +105,7 @@ namespace FinalTracker
             {
                 Airport OnFinalAirport;
                 Runway OnFinalRunway;
+                
                 if (!string.IsNullOrEmpty(aircraft.Value.Latitude) && FinalMap.IsAircraftOnFinal(aircraft.Value, out OnFinalAirport, out OnFinalRunway))
                 {
                     LFS.Data.GeoPoint aircraftLocation = new LFS.Data.GeoPoint(double.Parse(aircraft.Value.Latitude), double.Parse(aircraft.Value.Longitude));
@@ -103,29 +114,97 @@ namespace FinalTracker
 
                     ExtractPropsFromAircraft(aircraft, out speed, out altitude, out verticalRate);
 
-                    onFinalItems.Add(MakeFinalItem(aircraft, OnFinalAirport, OnFinalRunway, distance, speed));
+                    onFinalItems.Add(MakeFinalItem(
+                        aircraft,
+                        callsignCache.ContainsKey(aircraft.Value.Callsign) ? callsignCache[aircraft.Value.Callsign].Item1 : null,
+                        OnFinalAirport,
+                        OnFinalRunway,
+                        distance,
+                        speed));
 
                     DetectGoAround(aircraft, OnFinalAirport, OnFinalRunway, distance, altitude, verticalRate);
                 }
+
+                UpdateFlightsCache(aircraft);
             }
 
             SetOnFinalItems(onFinalItems);
         }
 
-        private static Tuple<double, OnFinalDisplayItem> MakeFinalItem(KeyValuePair<string, Aircraft> aircraft, Airport OnFinalAirport, Runway OnFinalRunway, double distance, double speed)
+        private void UpdateFlightsCache(KeyValuePair<string, Aircraft> aircraft)
         {
-            return new Tuple<double, OnFinalDisplayItem>(distance, new OnFinalDisplayItem()
+            const long minutesBetweenQueries = 60;
+
+            if (!string.IsNullOrEmpty(aircraft.Value.Callsign))
+            {
+                bool callsignCached = callsignCache.ContainsKey(aircraft.Value.Callsign);
+
+                if (!callsignCached || (callsignCached && DateTime.UtcNow.Subtract(callsignCache[aircraft.Value.Callsign].Item2) > new TimeSpan(TimeSpan.TicksPerMinute * minutesBetweenQueries)))
+                {
+                    _ = ThreadPool.QueueUserWorkItem(FlightCacheCallback, aircraft.Value.Callsign);
+                }
+            }
+        }
+        
+        private void FlightCacheCallback(object context)
+        {
+            const long minutesBeforeRetry = -59;
+            string callsign = (string)context;
+
+            // Add an empty cache record to stop another api call before this one completes.
+            // Set the timeout to 1 minute in case it fails so we can try again.
+            callsignCache[callsign] = new Tuple<Flight, DateTime>(null, DateTime.UtcNow.AddMinutes(minutesBeforeRetry));
+
+            Task<ResultList<Flight>> getFlightsTask = LFS.Data.API.AeroAPI.AeroAPI.FlightsByFlightIdentifier(aeroAPIKey, callsign);
+            getFlightsTask.Wait();
+
+            if (getFlightsTask.Result == null)
+            {
+                return; // Empty result, bail out
+            }
+
+            IList<Flight> flights = getFlightsTask.Result.Results;
+
+            if (flights != null && flights.Count > 0)
+            {
+                Flight inProgressFlight = LFS.Data.API.AeroAPI.Helper.FlightsHelper.FirstInProgress(flights);
+                if (inProgressFlight != null)
+                {
+                    callsignCache[callsign] = new Tuple<Flight, DateTime>(inProgressFlight, DateTime.UtcNow);
+                    Debug.WriteLine("Callsign Cached " + flights[0].FaFlightId);
+                }
+            }
+        }
+
+        private static Tuple<double, OnFinalDisplayItem> MakeFinalItem(KeyValuePair<string, Aircraft> aircraft, Flight flight, Airport OnFinalAirport, Runway OnFinalRunway, double distanceOut, double speed)
+        {
+            string registration = "";
+            string typeCode = "";
+            long duration = 0;
+            long routeDistance = 0;
+            string originCode = "";
+
+            if (flight != null)
+            {
+                registration = flight.Registration;
+                typeCode = flight.AircraftType;
+                duration = flight.FiledETE == null ? 0L : (long)flight.FiledETE;
+                routeDistance = flight.RouteDistance == null ? 0L : (long)flight.RouteDistance;
+                originCode = flight.Origin.Code;
+            }
+
+            return new Tuple<double, OnFinalDisplayItem>(distanceOut, new OnFinalDisplayItem()
             {
                 Callsign = string.IsNullOrEmpty(aircraft.Value.Callsign) ? string.Format("#{0}#", aircraft.Key) : aircraft.Value.Callsign,
-                Registration = "N123JB",
-                TypeCode = "A20N",
-                SecondsOut = speed > 0 ? (long)(distance / speed) : 0,
-                DistanceOut = (long)Math.Round(distance, 0),
+                Registration = registration,
+                TypeCode = typeCode,
+                SecondsOut = speed > 0 ? (long)(distanceOut / speed) : 0,
+                DistanceOut = (long)Math.Round(distanceOut, 0),
                 DistanceOutUnits = "nm",
-                Duration = 1234567,
-                Distance = 2345,
+                Duration = duration,
+                Distance = routeDistance,
                 DistanceUnits = "nm",
-                OriginCode = "KSFO",
+                OriginCode = originCode,
                 Runway = string.Format("{0} {1}", OnFinalAirport.IATACode, OnFinalRunway.Name)
             });
         }
