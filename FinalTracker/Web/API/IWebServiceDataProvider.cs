@@ -1,7 +1,7 @@
 ﻿using System.IO;
 using System.Text;
 
-namespace FinalTracker.WebAPI
+namespace FinalTracker.Web.API
 {
     public interface IWebServiceDataProvider
     {

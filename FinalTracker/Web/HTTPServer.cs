@@ -1,33 +1,17 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Threading;
 using System.Net;
 using System.Diagnostics;
-using System.IO;
 
-namespace FinalTracker.WebAPI
+namespace FinalTracker.Web
 {
-    public class WebServicesServer : IDisposable
+    public abstract class HTTPServer : IDisposable
     {
         private string _host;
         private ushort _port;
         private string _protocol;
-        private Dictionary<string, IWebServiceDataProvider> endPoints = new Dictionary<string, IWebServiceDataProvider>();
-        private readonly object endPointMutex = new object();
-        HttpListener listener;
-
+        private HttpListener listener;
         private Thread listenerThread;
-
-        public void RegisterEndPoint(string path, IWebServiceDataProvider dataprovider)
-        {
-            lock (endPointMutex)
-            {
-                endPoints[path] = dataprovider;
-            }
-        }
 
         public void HandleConnections()
         {
@@ -44,34 +28,15 @@ namespace FinalTracker.WebAPI
                 while (running)
                 {
                     HttpListenerContext listenerContext = null;
-                    Debug.WriteLine("Waiting for request", "WebServicesServer");
                     listenerContext = listener.GetContext();
-                    Debug.WriteLine("Received Request", "WebServicesServer");
 
                     HttpListenerRequest request = listenerContext.Request;
                     HttpListenerResponse response = listenerContext.Response;
 
-                    if (request.HttpMethod != "GET")
-                    {
-                        response.StatusCode = 405;
+                    ThreadPool.QueueUserWorkItem((_) => {
+                        handleResponse(request, ref response);
                         sendResponse(request, response);
-                        continue;
-                    }
-
-                    IWebServiceDataProvider endPoint;
-                    lock (endPointMutex)
-                    {
-                        endPoint = endPoints[request.Url.AbsolutePath];
-                    }
-
-                    if (endPoint == null)
-                    {
-                        response.StatusCode = 404;
-                        sendResponse(request, response);
-                        continue;
-                    }
-
-                    ThreadPool.QueueUserWorkItem((_) => { handleResponse(endPoint, request, response); });
+                    });
                 }
             }
             catch (ThreadAbortException)
@@ -82,17 +47,13 @@ namespace FinalTracker.WebAPI
             {
                 Debug.WriteLine(ex, "WebServicesServer");
             }
-            finally
-            {
-                listener?.Stop();
-                listener?.Abort();
-                listener?.Close();
-            }
 
             Debug.WriteLine("Leaving Listener Thread", "WebServicesServer");
         }
 
-        public WebServicesServer(string host, ushort port)
+        protected abstract void handleResponse(HttpListenerRequest request, ref HttpListenerResponse response);
+
+        public HTTPServer(string host, ushort port)
         {
             _protocol = "http";
             _host = host;
@@ -100,15 +61,6 @@ namespace FinalTracker.WebAPI
 
             listenerThread = new Thread(new ThreadStart(HandleConnections));
             listenerThread.Start();
-        }
-
-        private void handleResponse(IWebServiceDataProvider endPoint, HttpListenerRequest request, HttpListenerResponse response)
-        {
-            response.StatusCode = 200;
-            response.ContentType = endPoint.ContentType;
-            response.ContentEncoding = endPoint.Encoding;
-            endPoint.Serialize(response.OutputStream);
-            sendResponse(request, response);
         }
 
         private void sendResponse(HttpListenerRequest request, HttpListenerResponse response)
@@ -138,7 +90,7 @@ namespace FinalTracker.WebAPI
             listenerThread = null;
         }
 
-        ~WebServicesServer()
+        ~HTTPServer()
         {
             Dispose();
         }

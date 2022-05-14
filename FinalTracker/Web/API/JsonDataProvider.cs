@@ -7,7 +7,7 @@ using System.Text.Json;
 using System.IO;
 using System.Diagnostics;
 
-namespace FinalTracker.WebAPI
+namespace FinalTracker.Web.API
 {
     public class JsonDataProvider<_T> : IWebServiceDataProvider
     {
