@@ -18,6 +18,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using NLua;
+using LFS.Data.API.AeroAPI;
 using LFS.Data.API.AeroAPI.Model;
 using System.Diagnostics;
 
@@ -50,6 +51,17 @@ using System.Diagnostics;
  *      OnAircraftInRange - Add to in range list, order by first seen?, remove from any in range list once on arrival card stack
  */
 
+
+
+
+
+ /*  
+ * AeroAPI Data Received
+ *  Lookup cached aircraft
+ *  Add flight data to cached aircraft
+ * 
+ */
+
 namespace FinalTracker
 {
     /// <summary>
@@ -62,7 +74,10 @@ namespace FinalTracker
         static Lua luaState;
 
         string aeroAPIKey;
-        IDictionary<string, Tuple<LFS.Data.API.AeroAPI.Model.Flight, DateTime>> callsignCache = new ConcurrentDictionary<string, Tuple<LFS.Data.API.AeroAPI.Model.Flight, DateTime>>();
+
+        IDictionary<string, Aircraft> aircraftCache = new ConcurrentDictionary<string, Aircraft>();
+
+        ConcurrentBag<Airport> activeAirports = new ConcurrentBag<Airport>();
 
         public MainWindow()
         {
@@ -73,13 +88,15 @@ namespace FinalTracker
             aeroAPIKey = File.ReadAllText("aeroapi.key");
 
             acftRcvr = new RTLSDRADSB.AircraftReceiver(1);
-            acftRcvr.OnAircraftListUpdated += OnAircraftListUpdated;
+            acftRcvr.OnAircraftDataReceived += OnModeSDataReceived;
 
             Airport airportJFK = new Airport("John F Kennedy International Airport", "JFK", "KJFK");
             airportJFK.SetRunway(new Runway("4L", new LFS.Data.GeoPoint(40.622021, -73.785584383), 38.0, 5.0));
             airportJFK.SetRunway(new Runway("4R", new LFS.Data.GeoPoint(40.625425, -73.770347216), 38.0, 5.0));
             Airport airportLGA = new Airport("LaGuardia Airport", "LGA", "KLGA");
             airportLGA.SetRunway(new Runway("4", new LFS.Data.GeoPoint(40.76916463, -73.88411955), 39.5, 10.0));
+            activeAirports.Add(airportJFK);
+            activeAirports.Add(airportLGA);
             FinalMap.SetAirport(airportLGA);
             FinalMap.SetAircraftReceiver(acftRcvr);
 
@@ -93,90 +110,129 @@ namespace FinalTracker
             */
         }
 
-        private void OnAircraftListUpdated()
+        private void OnModeSDataReceived(RTLSDRADSB.Aircraft modeSAircraftData)
         {
-            Dispatcher.Invoke(new Action(() => UpdateFinalItems()));
+            bool modeSCodeKnown = aircraftCache.ContainsKey(modeSAircraftData.ModeSCode);
+            Aircraft aircraft;
+
+            if (modeSCodeKnown)
+            {
+                aircraft = aircraftCache[modeSAircraftData.ModeSCode];
+            }
+            else
+            {
+                aircraft = new Aircraft();
+                aircraft.ModeSData = modeSAircraftData;
+            }
+
+            if (AircraftHasLocationData())
+            {
+                // Detect runway poly intersections
+                foreach (var airport in activeAirports)
+                {
+                    Runway usingRunway = null;
+                    LFS.Data.GeoPoint aircraftPos = new LFS.Data.GeoPoint(double.Parse(aircraft.ModeSData.Latitude), double.Parse(aircraft.ModeSData.Longitude));
+                    if (aircraft.ModeSData.IsOnGround)
+                    {
+                        usingRunway = airport.GetRunwayOn(aircraftPos);
+                    }
+                    else
+                    {
+                        usingRunway = airport.GetFinal(aircraftPos);
+
+                        if (usingRunway != null && IsArriving())
+                        {
+                            aircraft.Arriving = true; // On final and descending, never set to false once detected.
+                        }
+                    }
+
+                    if (usingRunway != null)
+                    {
+                        aircraft.Runway = usingRunway;
+                        aircraft.Airport = airport;
+                    }
+                }
+
+                aircraft.GoAround = IsGoingAround();
+            }
+
+            if (aircraft.Flight == null && !string.IsNullOrEmpty(aircraft.ModeSData.Callsign))
+            {
+                aircraft.Flight = new Flight(); // Set an empty object so we don't call the API again for this aircraft.
+                AeroAPI.FlightsByFlightIdentifier(aeroAPIKey, aircraft.ModeSData.Callsign).ContinueWith(OnFlightDataReceived);
+            }
+
+            aircraftCache[modeSAircraftData.ModeSCode] = aircraft;
+
+            AfterAircraftUpdate();
+
+
+            bool IsArriving()
+            {
+                return double.Parse(aircraft.ModeSData.VerticalRate) < 0d;
+            }
+
+            bool IsGoingAround()
+            {
+                return aircraft.Arriving && double.Parse(aircraft.ModeSData.Altitude) < 3000.0 && double.Parse(aircraft.ModeSData.VerticalRate) > 100d;
+            }
+
+            bool AircraftHasLocationData()
+            {
+                return !string.IsNullOrEmpty(aircraft.ModeSData.Latitude) && !string.IsNullOrEmpty(aircraft.ModeSData.Longitude);
+            }
+        }
+
+        private void AfterAircraftUpdate()
+        {
+            Dispatcher.Invoke(new Action(() =>
+            {
+                UpdateFinalItems();
+                UpdateGoAroundItems();
+            }));
+        }
+
+        private void OnFlightDataReceived(Task<ResultList<Flight>> resultTask)
+        {
+            var flightsList = resultTask.Result.Results;
+            if (flightsList != null && flightsList.Count > 0)
+            {
+                Flight inProgressFlight = LFS.Data.API.AeroAPI.Helper.FlightsHelper.FirstInProgress(flightsList);
+                if (inProgressFlight != null)
+                {
+                    var aircraft = aircraftCache
+                        .Where(a => a.Value.ModeSData.Callsign == inProgressFlight.Ident)
+                        .First();
+                    aircraft.Value.Flight = inProgressFlight;
+                    aircraftCache[aircraft.Key] = aircraft.Value;
+                }
+            }
         }
 
         private void UpdateFinalItems()
         {
             List<Tuple<double, OnFinalDisplayItem>> onFinalItems = new List<Tuple<double, OnFinalDisplayItem>>();
-            foreach (var aircraft in acftRcvr.AircraftList)
+            foreach (var aircraft in aircraftCache.Select(a => a.Value).Where(a => a.Runway != null))
             {
-                Airport OnFinalAirport;
-                Runway OnFinalRunway;
-                
-                if (!string.IsNullOrEmpty(aircraft.Value.Latitude) && FinalMap.IsAircraftOnFinal(aircraft.Value, out OnFinalAirport, out OnFinalRunway))
-                {
-                    LFS.Data.GeoPoint aircraftLocation = new LFS.Data.GeoPoint(double.Parse(aircraft.Value.Latitude), double.Parse(aircraft.Value.Longitude));
-                    double distance = LFS.Data.Algorithms.Haversine(OnFinalRunway.ThresholdLocation, aircraftLocation);
-                    double speed, altitude, verticalRate;
+                LFS.Data.GeoPoint aircraftLocation = new LFS.Data.GeoPoint(double.Parse(aircraft.ModeSData.Latitude), double.Parse(aircraft.ModeSData.Longitude));
+                double distance = LFS.Data.Algorithms.Haversine(aircraft.Runway.ThresholdLocation, aircraftLocation);
+                double speed, altitude, verticalRate;
 
-                    ExtractPropsFromAircraft(aircraft, out speed, out altitude, out verticalRate);
+                ExtractPropsFromAircraft(aircraft.ModeSData, out speed, out altitude, out verticalRate);
 
-                    onFinalItems.Add(MakeFinalItem(
-                        aircraft,
-                        callsignCache.ContainsKey(aircraft.Value.Callsign) ? callsignCache[aircraft.Value.Callsign].Item1 : null,
-                        OnFinalAirport,
-                        OnFinalRunway,
-                        distance,
-                        speed));
-
-                    DetectGoAround(aircraft, OnFinalAirport, OnFinalRunway, distance, altitude, verticalRate);
-                }
-
-                UpdateFlightsCache(aircraft);
+                onFinalItems.Add(MakeFinalItem(
+                    aircraft.ModeSData,
+                    aircraft.Flight,
+                    aircraft.Airport,
+                    aircraft.Runway,
+                    distance,
+                    speed));
             }
 
             SetOnFinalItems(onFinalItems);
         }
 
-        private void UpdateFlightsCache(KeyValuePair<string, Aircraft> aircraft)
-        {
-            const long minutesBetweenQueries = 60;
-
-            if (!string.IsNullOrEmpty(aircraft.Value.Callsign))
-            {
-                bool callsignCached = callsignCache.ContainsKey(aircraft.Value.Callsign);
-
-                if (!callsignCached || (callsignCached && DateTime.UtcNow.Subtract(callsignCache[aircraft.Value.Callsign].Item2) > new TimeSpan(TimeSpan.TicksPerMinute * minutesBetweenQueries)))
-                {
-                    _ = ThreadPool.QueueUserWorkItem(FlightCacheCallback, aircraft.Value.Callsign);
-                }
-            }
-        }
-        
-        private void FlightCacheCallback(object context)
-        {
-            const long minutesBeforeRetry = -59;
-            string callsign = (string)context;
-
-            // Add an empty cache record to stop another api call before this one completes.
-            // Set the timeout to 1 minute in case it fails so we can try again.
-            callsignCache[callsign] = new Tuple<Flight, DateTime>(null, DateTime.UtcNow.AddMinutes(minutesBeforeRetry));
-
-            Task<ResultList<Flight>> getFlightsTask = LFS.Data.API.AeroAPI.AeroAPI.FlightsByFlightIdentifier(aeroAPIKey, callsign);
-            getFlightsTask.Wait();
-
-            if (getFlightsTask.Result == null)
-            {
-                return; // Empty result, bail out
-            }
-
-            IList<Flight> flights = getFlightsTask.Result.Results;
-
-            if (flights != null && flights.Count > 0)
-            {
-                Flight inProgressFlight = LFS.Data.API.AeroAPI.Helper.FlightsHelper.FirstInProgress(flights);
-                if (inProgressFlight != null)
-                {
-                    callsignCache[callsign] = new Tuple<Flight, DateTime>(inProgressFlight, DateTime.UtcNow);
-                    Debug.WriteLine("Callsign Cached " + flights[0].FaFlightId);
-                }
-            }
-        }
-
-        private static Tuple<double, OnFinalDisplayItem> MakeFinalItem(KeyValuePair<string, Aircraft> aircraft, Flight flight, Airport OnFinalAirport, Runway OnFinalRunway, double distanceOut, double speed)
+        private static Tuple<double, OnFinalDisplayItem> MakeFinalItem(RTLSDRADSB.Aircraft aircraft, Flight flight, Airport OnFinalAirport, Runway OnFinalRunway, double distanceOut, double speed)
         {
             string registration = "";
             string typeCode = "";
@@ -195,7 +251,7 @@ namespace FinalTracker
 
             return new Tuple<double, OnFinalDisplayItem>(distanceOut, new OnFinalDisplayItem()
             {
-                Callsign = string.IsNullOrEmpty(aircraft.Value.Callsign) ? string.Format("#{0}#", aircraft.Key) : aircraft.Value.Callsign,
+                Callsign = string.IsNullOrEmpty(aircraft.Callsign) ? string.Format("#{0}#", aircraft.ModeSCode) : aircraft.Callsign,
                 Registration = registration,
                 TypeCode = typeCode,
                 SecondsOut = speed > 0 ? (long)(distanceOut / speed) : 0,
@@ -219,43 +275,36 @@ namespace FinalTracker
             }
         }
 
-        private static void ExtractPropsFromAircraft(KeyValuePair<string, Aircraft> aircraft, out double speed, out double altitude, out double verticalRate)
+        private static void ExtractPropsFromAircraft(RTLSDRADSB.Aircraft aircraft, out double speed, out double altitude, out double verticalRate)
         {
-            if (!double.TryParse(aircraft.Value.GroundSpeed, out speed))
+            if (!double.TryParse(aircraft.GroundSpeed, out speed))
             {
                 speed = 0;
             }
-            if (!double.TryParse(aircraft.Value.Altitude, out altitude))
+            if (!double.TryParse(aircraft.Altitude, out altitude))
             {
                 altitude = 0;
             }
-            if (!double.TryParse(aircraft.Value.VerticalRate, out verticalRate))
+            if (!double.TryParse(aircraft.VerticalRate, out verticalRate))
             {
                 verticalRate = 0;
             }
         }
 
-        private void DetectGoAround(KeyValuePair<string, Aircraft> aircraft, Airport OnFinalAirport, Runway OnFinalRunway, double distance, double altitude, double verticalRate)
+        private void UpdateGoAroundItems()
         {
-            if ((distance < 5 && (altitude >= 2000 || verticalRate > 0)) || goArounds.ContainsKey(aircraft.Key))
+            aircraftCache.Where(a => a.Value.GoAround).Select(a => a.Value).ToList().ForEach(aircraft =>
             {
-                if (!goArounds.ContainsKey(aircraft.Key))
+                GoAroundStackPanel.Children.Add(new GoAroundDisplayItem()
                 {
-                    GoAroundStackPanel.Children.Add(new GoAroundDisplayItem()
-                    {
-                        Callsign = string.IsNullOrEmpty(aircraft.Value.Callsign) ? string.Format("#{0}#", aircraft.Key) : aircraft.Value.Callsign,
-                        Registration = "",
-                        TypeCode = "",
-                        OriginCode = "",
-                        Runway = string.Format("{0} {1}", OnFinalAirport.IATACode, OnFinalRunway.Name)
-                    });
-                    goArounds[aircraft.Key] = aircraft.Value;
-                }
-            }
+                    Callsign = string.IsNullOrEmpty(aircraft.ModeSData.Callsign) ? string.Format("#{0}#", aircraft.ModeSData.ModeSCode) : aircraft.ModeSData.Callsign,
+                    Registration = aircraft.Flight?.Registration,
+                    TypeCode = aircraft.Flight?.AircraftType,
+                    OriginCode = aircraft.Flight?.Origin?.CodeICAO,
+                    Runway = string.Format("{0} {1}", aircraft.Airport?.ICAOCode, aircraft.Runway?.Name)
+                });
+            });
         }
-
-        private ObservableCollection<OnFinalDisplayItem> onFinalAircraftList = new ObservableCollection<OnFinalDisplayItem>();
-        private Dictionary<string, RTLSDRADSB.Aircraft> goArounds = new Dictionary<string, RTLSDRADSB.Aircraft>();
 
         private void FinalMap_Loaded(object sender, RoutedEventArgs e)
         {
@@ -336,5 +385,5 @@ namespace FinalTracker
            BindingOperations.SetBinding(HitInside, ContentProperty, ResultTextBinding);
            BindingOperations.SetBinding(HitInside, ForegroundProperty, ResultForegroundBinding);
        }*/
+        }
     }
-}

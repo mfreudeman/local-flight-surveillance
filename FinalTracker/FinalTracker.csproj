@@ -100,6 +100,7 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </ApplicationDefinition>
+    <Compile Include="Flight.cs" />
     <Compile Include="GoAroundDisplayItem.xaml.cs">
       <DependentUpon>GoAroundDisplayItem.xaml</DependentUpon>
     </Compile>
@@ -109,6 +110,7 @@
     <Compile Include="Web\API\JsonDataProvider.cs" />
     <Compile Include="Web\API\WebServicesServer.cs" />
     <Compile Include="Web\Views\DocumentWebServer.cs" />
+    <Compile Include="Web\Views\IWebDynamicDocument.cs" />
     <Page Include="GoAroundDisplayItem.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>

@@ -11,9 +11,10 @@ namespace RTLSDRADSB
 {
     public class AircraftReceiver : dump1090
     {
-        public delegate void AircraftListUpdate();
+        public delegate void AircraftDataChanged(Aircraft aircraft);
 
-        public AircraftListUpdate OnAircraftListUpdated;
+        public AircraftDataChanged OnAircraftDataReceived;
+        public AircraftDataChanged OnAircraftDataTimeout;
 
         public AircraftReceiver(int deviceIndex): base(string.Format("--device-index {0} --quiet --fix --net --net-ro-size 500 --net-ro-rate 5 --net-buffer 5", deviceIndex))
         {
@@ -44,6 +45,7 @@ namespace RTLSDRADSB
                 if (DateTime.Now - aircraft.Value.LastMessageTime > timeout)
                 {
                     _aircraft.TryRemove(aircraft.Key, out _);
+                    ThreadPool.QueueUserWorkItem((a) => { OnAircraftDataTimeout?.Invoke((Aircraft)a); }, aircraft.Value);
                 }
             }
         }
@@ -93,6 +95,7 @@ namespace RTLSDRADSB
                     if (messageType == "MSG")
                     {
                         Aircraft aircraft = new Aircraft();
+                        aircraft.ModeSCode = modeSCode;
 
                         string callsign = match.Groups[@"Callsign"].Value.Trim();
                         string altitude = match.Groups[@"Altitude"].Value;
@@ -168,7 +171,7 @@ namespace RTLSDRADSB
 
                         _aircraft[modeSCode] = aircraft;
 
-                        OnAircraftListUpdated?.Invoke();
+                        ThreadPool.QueueUserWorkItem((a) => { OnAircraftDataReceived?.Invoke((Aircraft)a); }, aircraft);
                     }
                 }
 
@@ -208,7 +211,6 @@ namespace RTLSDRADSB
         private TcpClient client;
 
         private Thread connectionThread;
-        private Thread pruneThread;
 
         private ConcurrentDictionary<string, Aircraft> _aircraft = new ConcurrentDictionary<string, Aircraft>();
         

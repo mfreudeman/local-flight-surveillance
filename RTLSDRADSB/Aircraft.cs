@@ -4,6 +4,7 @@ namespace RTLSDRADSB
 {
     public struct Aircraft
     {
+        public string ModeSCode;
         public DateTime LastMessageTime;
         public string Callsign;
         public string Altitude;

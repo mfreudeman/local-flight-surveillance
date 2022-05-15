@@ -28,7 +28,8 @@ namespace FinalTracker
         public void SetAircraftReceiver(RTLSDRADSB.AircraftReceiver receiver)
         {
             _receiver = receiver;
-            _receiver.OnAircraftListUpdated += OnAircraftListUpdated;
+            _receiver.OnAircraftDataReceived += OnAircraftUpdated;
+            _receiver.OnAircraftDataTimeout += OnAircraftTimeout;
         }
 
         public bool IsAircraftOnFinal(RTLSDRADSB.Aircraft aircraft, out Airport onFinalAirport, out Runway onFinalRunway)
@@ -53,11 +54,20 @@ namespace FinalTracker
             return false;
         }
 
-        private void OnAircraftListUpdated()
+        private void OnAircraftUpdated(RTLSDRADSB.Aircraft aircraft)
         {
+            Aircraft[aircraft.ModeSCode] = aircraft;
             Dispatcher.Invoke(new Action(() =>
             {
-                Aircraft = new Dictionary<string, RTLSDRADSB.Aircraft>(_receiver.AircraftList);
+                InvalidateVisual();
+            }));
+        }
+
+        private void OnAircraftTimeout(RTLSDRADSB.Aircraft aircraft)
+        {
+            Aircraft.Remove(aircraft.ModeSCode);
+            Dispatcher.Invoke(new Action(() =>
+            {
                 InvalidateVisual();
             }));
         }

@@ -29,11 +29,23 @@ namespace FinalTracker
             ).ToList();
         }
 
-        public Runway GetFinalRunway(LFS.Data.GeoPoint point)
+        public Runway GetFinal(LFS.Data.GeoPoint point)
         {
             foreach(Runway r in ActiveRunways)
             {
                 if (LFS.Data.Algorithms.PointInPolygon(point, r.FinalPolygon.ToArray()))
+                {
+                    return r;
+                }
+            }
+            return null;
+        }
+
+        public Runway GetRunwayOn(LFS.Data.GeoPoint point)
+        {
+            foreach (Runway r in ActiveRunways)
+            {
+                if (LFS.Data.Algorithms.PointInPolygon(point, r.RunwayPolygon.ToArray()))
                 {
                     return r;
                 }
